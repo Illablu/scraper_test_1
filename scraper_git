@@ -1,0 +1,329 @@
+import selenium 
+from selenium import webdriver
+from pyvirtualdisplay import Display
+from selenium.webdriver.common.keys import Keys
+import re
+import time
+import pytds
+#import unicodecsv
+#import pyodbc
+#import mysql.connector
+
+#cnxn = pyodbc.connect(r'Driver={SQL Server};Server=xxxx;Database=xxxxxxx;uid=xxxxxx;pwd=xxxxxxxxxx')
+#cursor = cnxn.cursor()
+
+cnxn = pytds.connect('','','','')
+cursor = cnxn.cursor()
+
+#cnxn = mysql.connector.connect(user='xxx', password='xx',
+#                              host='xxxxx',
+#                             database='xxxxx')
+
+
+display = Display(visible=0, size=(1024, 768))
+display.start()
+
+
+
+pagesPat = re.compile('(\d+) pages')
+
+_DEFAULT = None
+_MAX_TRIES = 10
+_TRY_PAUSE = 0.1
+
+PAUSE = 0
+
+__version__ = '0.9.0'
+
+def search(searchTerms):
+    global _DEFAULT
+    if _DEFAULT is None:
+        _DEFAULT = AmzScrape()
+    return _DEFAULT.search(searchTerms)
+
+def close():
+    if _DEFAULT:
+      _DEFAULT.close()
+
+
+def get(productUrl):
+    global _DEFAULT
+    if _DEFAULT is None:
+        _DEFAULT = AmzScrape()
+    return _DEFAULT.get(productUrl)
+
+
+class AmzScrape():
+    def __init__(self):
+        self.browser = None
+
+    def browserExists(self):
+        if self.browser is None:
+            return False
+
+        try:
+            self.browser.window_handles
+        except ConnectionRefusedError:
+            self.browser = None
+            return False
+        return True
+
+
+    def init(self):
+        if not self.browserExists():
+            self.browser = webdriver.Firefox()
+
+    def close(self):
+        if self.browserExists():
+            self.browser.quit()
+            display.stop()
+
+
+
+
+
+    def search(self, searchTerms):
+        self.init()
+
+        try:
+            searchElem = self.browser.find_element_by_id('twotabsearchtextbox')
+        except:
+            # If there is no 'twotabsearchtextbox' element, go to the Amazon home page.
+            self.browser.get('http://www.amazon.co.uk')
+            searchElem = self.browser.find_element_by_id('twotabsearchtextbox')
+
+        # enter the search terms
+        searchElem.clear()
+        searchElem.send_keys(searchTerms + "\n")
+                # locate all the search results
+        tries = 0
+        while tries < 3:
+            try:
+                # try to get all the search results
+                results = []
+                resultElems = self.browser.find_elements_by_class_name('s-access-title')
+                for elem in resultElems:
+                    productName = elem.text
+                    elem = elem.find_element_by_xpath('..')
+                    results.append((productName, elem.get_attribute('href')))
+                return results
+                break
+            except selenium.common.exceptions.StaleElementReferenceException:
+                time.sleep(0.1) # pause and try again
+                tries += 1
+
+        time.sleep(PAUSE)
+        return results
+
+
+    def get(self, productUrl):
+        """
+        The return value is a dictionary with the following keys:
+
+        'name' -
+        'pages' -
+        'publisher' -
+        'date' -
+        'language' -
+        'isbn10' -
+        'isbn13' -
+        'dimensions' -
+        'asin' -
+        '5star' -
+        '4star' -
+        '3star' -
+        '2star' -
+        '1star' -
+
+        """
+        self.init()
+
+        self.browser.get(productUrl)
+
+        info = {}
+        try:
+            info['name'] = self.browser.find_element_by_id('productTitle').text
+        except selenium.common.exceptions.NoSuchElementException:
+            info['name'] = self.browser.find_element_by_id('btAsinTitle').text
+
+        # Get elements under "Product Details"
+        elems = self.browser.find_elements_by_css_selector('.content li')
+        for elem in elems:
+            mo = pagesPat.search(elem.text)
+            if mo is not None:
+                info['pages'] = mo.group(1)
+
+            if 'Publisher: ' in elem.text:
+                info['publisher'] = elem.text[len('Publisher: '):]
+
+            if 'Language: ' in elem.text:
+                info['language'] = elem.text[len('Language: '):]
+
+            if 'ISBN-10: ' in elem.text:
+                info['isbn10'] = elem.text[len('ISBN-10: '):]
+
+            if 'ISBN-13: ' in elem.text:
+                info['isbn13'] = elem.text[len('ISBN-13: '):]
+
+            if 'Product Dimensions: ' in elem.text:
+                info['dimensions'] = elem.text[len('Product Dimensions: '):]
+
+            if 'ASIN: ' in elem.text:
+                info['asin'] = elem.text[len('ASIN: '):]
+
+
+        # Get review information
+        info['5star'] = 0
+        info['4star'] = 0
+        info['3star'] = 0
+        info['2star'] = 0
+        info['1star'] = 0
+        if 'asin' in info:
+            try:
+                # Getting kindle-store formmated review numbers (requires ASIN)
+                revSelector = '#revHist-dpReviewsSummaryWithQuotes-{asin} > div.fl.histoRow{numStars}.clearboth > a > div.histoCount.fl.gl10.ltgry.txtnormal'
+                info['5star'] = int(self.browser.find_element_by_css_selector(revSelector.format(**{'asin': info['asin'], 'numStars': 'five'})).text)
+                info['4star'] = int(self.browser.find_element_by_css_selector(revSelector.format(**{'asin': info['asin'], 'numStars': 'four'})).text)
+                info['3star'] = int(self.browser.find_element_by_css_selector(revSelector.format(**{'asin': info['asin'], 'numStars': 'three'})).text)
+                info['2star'] = int(self.browser.find_element_by_css_selector(revSelector.format(**{'asin': info['asin'], 'numStars': 'two'})).text)
+                info['1star'] = int(self.browser.find_element_by_css_selector(revSelector.format(**{'asin': info['asin'], 'numStars': 'one'})).text)
+            except selenium.common.exceptions.NoSuchElementException:
+                pass # Page must have a different type of formatting for its reviews
+
+        try:
+            # Getting regular-store formatted review numbers
+            revSelector = '#histogramTable > tbody > tr:nth-child({child}) > td:nth-child(3) > a'
+            info['5star'] = int(self.browser.find_element_by_css_selector(revSelector.format(**{'child': '1'})).text)
+            info['4star'] = int(self.browser.find_element_by_css_selector(revSelector.format(**{'child': '2'})).text)
+            info['3star'] = int(self.browser.find_element_by_css_selector(revSelector.format(**{'child': '3'})).text)
+            info['2star'] = int(self.browser.find_element_by_css_selector(revSelector.format(**{'child': '4'})).text)
+            info['1star'] = int(self.browser.find_element_by_css_selector(revSelector.format(**{'child': '5'})).text)
+        except selenium.common.exceptions.NoSuchElementException:
+            pass # Page must have a different type of formatting for its reviews
+
+        try:
+            # Getting regular-store formatted review numbers (version 2)
+            revSelector = 'tr.a-histogram-row:nth-child({child}) > td:nth-child(3) > a:nth-child(2)'
+            info['5star'] = int(self.browser.find_element_by_css_selector(revSelector.format(**{'child': '1'})).text)
+            info['4star'] = int(self.browser.find_element_by_css_selector(revSelector.format(**{'child': '2'})).text)
+            info['3star'] = int(self.browser.find_element_by_css_selector(revSelector.format(**{'child': '3'})).text)
+            info['2star'] = int(self.browser.find_element_by_css_selector(revSelector.format(**{'child': '4'})).text)
+            info['1star'] = int(self.browser.find_element_by_css_selector(revSelector.format(**{'child': '5'})).text)
+        except selenium.common.exceptions.NoSuchElementException:
+            pass # Page must have a different type of formatting for its reviews
+
+        info['numReviews'] = info['5star'] + info['4star'] + info['3star'] + info['2star'] + info['1star']
+        if info['numReviews'] != 0:
+            info['rating'] = round(float(info['5star']*5 + info['4star']*4 + info['3star']*3 + info['2star']*2 + info['1star']) / info['numReviews'], 1)
+        else:
+            info['rating'] = 0
+
+        # download product images
+        info['images'] = []
+        try:
+            #import pdb; pdb.set_trace()
+            # regular formatted images
+            allImgElem = self.browser.find_element_by_class_name('imageThumb')
+            allImgElem.click()
+            for imgElem in self.browser.find_elements_by_class_name('ig-thumb-image'):
+                # click on each thumb nail
+                imgElem.click()
+                time.sleep(0.2)
+                info['images'].append(self.browser.find_element_by_id('igImage').get_attribute('src'))
+            self.browser.find_element_by_id('igImage').send_keys(Keys.ESCAPE)
+            time.sleep(1)
+        except selenium.common.exceptions.NoSuchElementException:
+            try:
+                # kindle store formatted images
+                allImgElem = self.browser.find_element_by_class_name('border')
+                allImgElem.click()
+                #import pdb; pdb.set_trace()
+                for imgElem in self.browser.find_elements_by_class_name('iv_thumb_image'):
+                    # click on each thumb nail
+                    imgElem.click()
+                    time.sleep(0.2)
+                    tries = 0
+                    while tries < _MAX_TRIES:
+                        try:
+                            info['images'].append(self.browser.find_element_by_class_name('fullScreen').get_attribute('src'))
+                            break
+                        except selenium.common.exceptions.StaleElementReferenceException:
+                            tries += 1
+                            time.sleep(_TRY_PAUSE)
+                self.browser.find_element_by_class_name('ap_closebutton').click()
+                time.sleep(1)
+            except selenium.common.exceptions.NoSuchElementException:
+                try:
+                    info['images'].append(self.browser.find_element_by_id('prodImage').get_attribute('src'))
+                except selenium.common.exceptions.NoSuchElementException:
+                    pass
+
+
+        # get offer and list prices
+        try:
+            info['offerPrice'] = self.browser.find_element_by_class_name('offer-price').text
+        except:
+            try:
+                info['offerPrice'] = self.browser.find_element_by_class_name('.priceLarge').text
+            except:
+                info['offerPrice'] = None
+
+        try:
+            info['price'] = self.browser.find_element_by_id('priceblock_ourprice').text
+        except:
+            try:
+                info['price'] = self.browser.find_element_by_class_name('a-color-price').text
+            except:
+                info['price'] = None
+
+        try:
+            info['seller'] = self.browser.find_element_by_id('brand').text
+            info['seller_url'] = self.browser.find_element_by_id('brand').get_attribute('href')
+        except:
+            info['seller'] = None
+            info['seller_url'] = None
+
+        try:
+            info['listPrice'] = self.browser.find_element_by_css_selector('.a-text-strike.a-color-secondary').text
+        except:
+            try:
+                info['listPrice'] = self.browser.find_element_by_css_selector('span.listprice').text
+            except:
+               info['listPrice'] = None
+
+        time.sleep(PAUSE)
+        return info
+
+def insert_to_sql(search_term):
+    search_results = []
+
+    search_results = search(search_term)
+
+    print search_results
+
+    for result in search_results:
+        try:
+            info=get(result[1])
+            search_result = [result[0], result[1], info['price'],info['seller'],info['seller_url']]
+          #  search_results.append(search_result)
+            print search_results
+            cursor.execute("INSERT into result_scraper (product, url, price, seller, seller_url, created_at) VALUES ('%s', '%s', '%s', '%s', '%s', getdate());" % tuple(search_result))
+           # cursor.execute("INSERT into result_CALYPSO_Chair (product, url, price, seller, seller_url, created_at) VALUES (%?,%?, %?,%?, %?, getdate());" % search_result)
+            cnxn.commit()
+
+        except ValueError:
+            print "Oops!  That was no valid number.  Try again..."
+            cursor.execute("INSERT into logs (message,status,created_at) VALUES ('blabla', 'error', getdate());", result[0])
+            cnxn.commit()
+    cursor.execute("INSERT into logs (message,status,created_at) VALUES ('bello', 'successo', getdate());")
+    cnxn.commit()
+
+
+
+
+search_terms = ['B01DJH6QHG','B01DJH6QOE','B01DJH6U22','B01DJH6U6S','B01DJH6U5O','B01DJH6U86','B01DJH6U3G','B01DJH6USQ','B01DJH6U68','B01DJH6XRO','B01DJH6XQA','B01DJH6XR4','B01DJH6XFQ','B01DJH6XDI','B01DJH6XKG','B01DJH6XD8','B01DJH70YY','B01DJH712A','B01DJH70GW','B01DJH70JY','B01DJH70MG','B01DJH70O4','B01DJH73X2','B01DJH742M','B01DJH7440','B01DJH73VE','B01DJH73Y6','B01DJH7404','B01DJH740E','B01DJH77E2','B01DJH777O','B01DJH77AG','B01CQAUYOS ','B01CQAUYKW','B01CQAUYQG','B01CQAUYLQ','B01CQAUYZW']
+for term in search_terms:
+    insert_to_sql(term)
+
+
+close()
