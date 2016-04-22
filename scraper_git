@@ -291,6 +291,12 @@ class AmzScrape():
             except:
                info['listPrice'] = None
 
+
+        info['imagesCount'] = len(self.browser.find_elements_by_css_selector('#imageBlock_feature_div #altImages ul li.item img'))
+
+
+
+
         time.sleep(PAUSE)
         return info
 
@@ -304,10 +310,10 @@ def insert_to_sql(search_term):
     for result in search_results:
         try:
             info=get(result[1])
-            search_result = [result[0], result[1], info['price'],info['seller'],info['seller_url']]
+            search_result = [result[0], result[1], info['price'],info['seller'],info['seller_url'],info['imagesCount']]
           #  search_results.append(search_result)
             print search_results
-            cursor.execute("INSERT into result_scraper (product, url, price, seller, seller_url, created_at) VALUES ('%s', '%s', '%s', '%s', '%s', getdate());" % tuple(search_result))
+            cursor.execute("INSERT into result_scraper (product, url, price, seller, seller_url, created_at) VALUES ('%s', '%s', '%s', '%s', '%s', '%s', getdate());" % tuple(search_result))
            # cursor.execute("INSERT into result_CALYPSO_Chair (product, url, price, seller, seller_url, created_at) VALUES (%?,%?, %?,%?, %?, getdate());" % search_result)
             cnxn.commit()
 
